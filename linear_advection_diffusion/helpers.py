@@ -9,6 +9,7 @@ in the original MATLAB code:
     tkron.m              ->  tkron
     red_aug_S.m          ->  red_aug_S
     nonconstrun.m        ->  nonconstrun
+    tensoraddition.m     ->  tensoraddition
     (lmlragen builtin)   ->  tucker_full
 
 Tucker-tensor convention used everywhere in this project
@@ -96,6 +97,34 @@ def flux_product(flow, solution):
     sol_factors, sol_core = solution
     factors = [tkr(flow_factors[m], sol_factors[m]) for m in range(3)]
     core = tkron(flow_core, sol_core)
+    return factors, core
+
+
+def tensoraddition(factors1, core1, factors2, core2):
+    """Direct (block-diagonal) sum of two Tucker tensors -> represents their SUM.
+
+    Port of ``tensoraddition.m``.  If T1 = (factors1, core1) and T2 =
+    (factors2, core2), the result represents the full tensor ``T1 + T2`` while
+    staying in Tucker format: each mode's factor is the horizontal stack of the
+    two factors, and the new core places ``core1`` and ``core2`` in opposite
+    corners of a larger, otherwise-zero core (so the two summands act on disjoint
+    blocks of basis vectors).
+
+    Parameters
+    ----------
+    factors1, factors2 : list[ndarray]   [U1, U2, U3] of each tensor
+    core1, core2       : ndarray         3D cores, shapes (a1,b1,c1), (a2,b2,c2)
+
+    Returns
+    -------
+    factors : list[ndarray]   [hstack(U1), hstack(U2), hstack(U3)]
+    core    : ndarray         shape (a1+a2, b1+b2, c1+c2)
+    """
+    factors = [np.hstack([factors1[m], factors2[m]]) for m in range(3)]
+    (a1, b1, c1), (a2, b2, c2) = core1.shape, core2.shape
+    core = np.zeros((a1 + a2, b1 + b2, c1 + c2))
+    core[:a1, :b1, :c1] = core1
+    core[a1:, b1:, c1:] = core2
     return factors, core
 
 

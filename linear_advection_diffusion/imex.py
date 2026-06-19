@@ -55,8 +55,9 @@ from math import sqrt
 import numpy as np
 import pytensorlab as tl
 
-from helpers import flux_product, red_aug_K, red_aug_S, nonconstrun, tucker_full
+from helpers import flux_product, red_aug_K, red_aug_S, tucker_full
 from simoncini import simoncini
+from lomac import truncate
 # reuse the validated 1st-order step and its cached Sylvester machinery
 from imex111 import imex111, DiffMatrices, solve_sylvester_cached
 
@@ -252,7 +253,8 @@ def s_step(a_diag, dtn, diff, V_new, R, terms):
     return S_nn
 
 
-def implicit_stage(U_n, terms, a_diag, dtn, diff, tol, predictor, previous_U):
+def implicit_stage(U_n, terms, a_diag, dtn, diff, tol, predictor, previous_U,
+                   lomac_data=None):
     """Run one implicit DIRK stage (stages 2..s of IMEX222 / IMEX443).
 
     Steps, in the same order as the MATLAB:
@@ -261,7 +263,7 @@ def implicit_stage(U_n, terms, a_diag, dtn, diff, tol, predictor, previous_U):
       2. three K-steps (k_step) -> V_ddagger;
       3. reduced-augment again for the S-step (red_aug_S, common rank R);
       4. S-step (s_step) -> new core;
-      5. truncate (nonconstrun).
+      5. truncate (plain HOSVD, or conservative LoMaC).
 
     Parameters
     ----------
@@ -273,6 +275,7 @@ def implicit_stage(U_n, terms, a_diag, dtn, diff, tol, predictor, previous_U):
     tol        : float              truncation tolerance
     predictor  : list[ndarray]      IMEX111 predictor factors at this stage time
     previous_U : list[list]         previous stage factors [U_1, ..., U_{i-1}]
+    lomac_data : LomacData or None  conservative truncation data, or None
 
     Returns
     -------
@@ -301,7 +304,7 @@ def implicit_stage(U_n, terms, a_diag, dtn, diff, tol, predictor, previous_U):
 
     # S-step: update the core, then truncate.
     S_nn = s_step(a_diag, dtn, diff, V_new, R, terms)
-    return nonconstrun(V_new, S_nn, tol)
+    return truncate(V_new, S_nn, tol, lomac_data)
 
 
 def flux_terms(coeff, flow_fields, sol):
@@ -321,7 +324,7 @@ def flux_terms(coeff, flow_fields, sol):
 # =========================================================================
 # IMEX222  --  second-order, ARS(2,2,2),  gamma = 1 - 1/sqrt(2)
 # =========================================================================
-def imex222(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol):
+def imex222(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol, lomac_data=None):
     """Advance the Tucker solution one second-order IMEX222 step.
 
     Port of IMEX222.m.  Two stages: stage 1 is IMEX111 over gamma*dt; stage 2
@@ -332,7 +335,7 @@ def imex222(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol):
     sol_n = (U_n, G_n)
 
     # --- Stage 1: t^(1) = t^n + gamma*dt, just an IMEX111 sub-step ----------
-    U_1, G_1, _ = imex111(U_n, G_n, MLR_n, A, B, C, P, tn, gamma*dtn, diff, tol)
+    U_1, G_1, _ = imex111(U_n, G_n, MLR_n, A, B, C, P, tn, gamma*dtn, diff, tol, lomac_data)
     sol_1 = (U_1, G_1)
     t1 = tn + gamma*dtn
 
@@ -348,14 +351,14 @@ def imex222(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol):
     terms += flux_terms(-(1-delta)*dtn, (A(t1), B(t1), C(t1)), sol_1)  # flux at t^(1)
 
     # Predictor: IMEX111 over the full step (we keep only its basis).
-    U_dag, _, _ = imex111(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol)
-    return implicit_stage(U_n, terms, gamma, dtn, diff, tol, U_dag, [U_1])
+    U_dag, _, _ = imex111(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol, lomac_data)
+    return implicit_stage(U_n, terms, gamma, dtn, diff, tol, U_dag, [U_1], lomac_data)
 
 
 # =========================================================================
 # IMEX443  --  third-order, ARS(4,4,3),  diagonal coefficient 1/2
 # =========================================================================
-def imex443(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol):
+def imex443(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol, lomac_data=None):
     """Advance the Tucker solution one third-order IMEX443 step.
 
     Port of IMEX443.m.  Four stages; the diagonal implicit coefficient is 1/2.
@@ -368,7 +371,7 @@ def imex443(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol):
         return (A(t), B(t), C(t))
 
     # --- Stage 1: t^(1) = t^n + c1*dt, IMEX111 sub-step ---------------------
-    U_1, G_1, _ = imex111(U_n, G_n, MLR_n, A, B, C, P, tn, c1*dtn, diff, tol)
+    U_1, G_1, _ = imex111(U_n, G_n, MLR_n, A, B, C, P, tn, c1*dtn, diff, tol, lomac_data)
     sol_1 = (U_1, G_1)
     t1 = tn + c1*dtn
 
@@ -381,8 +384,8 @@ def imex443(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol):
     ]
     terms += flux_terms(-(11/18)*dtn, flow(tn), sol_n)   # E_n at t^n
     terms += flux_terms(-(1/18)*dtn,  flow(t1), sol_1)   # E_1 at t^(1)
-    U_dag, _, _ = imex111(U_n, G_n, MLR_n, A, B, C, P, tn, c2*dtn, diff, tol)
-    U_2, G_2, _ = implicit_stage(U_n, terms, a, dtn, diff, tol, U_dag, [U_1])
+    U_dag, _, _ = imex111(U_n, G_n, MLR_n, A, B, C, P, tn, c2*dtn, diff, tol, lomac_data)
+    U_2, G_2, _ = implicit_stage(U_n, terms, a, dtn, diff, tol, U_dag, [U_1], lomac_data)
     sol_2 = (U_2, G_2)
     t2 = tn + c2*dtn
 
@@ -398,8 +401,8 @@ def imex443(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol):
     terms += flux_terms(-(5/6)*dtn, flow(tn), sol_n)
     terms += flux_terms(+(5/6)*dtn, flow(t1), sol_1)     # -(-5/6)
     terms += flux_terms(-(1/2)*dtn, flow(t2), sol_2)
-    U_dag, _, _ = imex111(U_n, G_n, MLR_n, A, B, C, P, tn, c3*dtn, diff, tol)
-    U_3, G_3, _ = implicit_stage(U_n, terms, a, dtn, diff, tol, U_dag, [U_1, U_2])
+    U_dag, _, _ = imex111(U_n, G_n, MLR_n, A, B, C, P, tn, c3*dtn, diff, tol, lomac_data)
+    U_3, G_3, _ = implicit_stage(U_n, terms, a, dtn, diff, tol, U_dag, [U_1, U_2], lomac_data)
     sol_3 = (U_3, G_3)
     t3 = tn + c3*dtn
 
@@ -418,19 +421,23 @@ def imex443(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol):
     terms += flux_terms(-(7/4)*dtn, flow(t1), sol_1)
     terms += flux_terms(-(3/4)*dtn, flow(t2), sol_2)
     terms += flux_terms(+(7/4)*dtn, flow(t3), sol_3)     # -(-7/4)
-    U_dag, _, _ = imex111(U_n, G_n, MLR_n, A, B, C, P, tn, c4*dtn, diff, tol)
-    return implicit_stage(U_n, terms, a, dtn, diff, tol, U_dag, [U_1, U_2, U_3])
+    U_dag, _, _ = imex111(U_n, G_n, MLR_n, A, B, C, P, tn, c4*dtn, diff, tol, lomac_data)
+    return implicit_stage(U_n, terms, a, dtn, diff, tol, U_dag, [U_1, U_2, U_3], lomac_data)
 
 
 # =========================================================================
 # Dispatcher
 # =========================================================================
-def imex_step(order, U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol):
-    """Advance one time step with the chosen IMEX order (1, 2, or 3)."""
+def imex_step(order, U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol, lomac_data=None):
+    """Advance one time step with the chosen IMEX order (1, 2, or 3).
+
+    ``lomac_data`` selects the truncation: None -> plain HOSVD (``nonconstrun``);
+    a :class:`lomac.LomacData` bundle -> conservative LoMaC truncation.
+    """
     if order == 1:
-        return imex111(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol)
+        return imex111(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol, lomac_data)
     if order == 2:
-        return imex222(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol)
+        return imex222(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol, lomac_data)
     if order == 3:
-        return imex443(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol)
+        return imex443(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol, lomac_data)
     raise ValueError(f"order must be 1, 2, or 3 (got {order})")

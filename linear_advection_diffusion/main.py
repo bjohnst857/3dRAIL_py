@@ -31,6 +31,7 @@ from scipy.linalg import toeplitz
 from test_parameters import TestParameters
 from imex import imex_step, DiffMatrices
 from helpers import tucker_full
+from lomac import build_lomac_data, macroscopic_quantities
 
 
 def first_derivative_matrix(N, ds, L):
@@ -74,15 +75,27 @@ def build_diff_matrices(p):
     return DiffMatrices(first=[Dx, Dy, Dz], second=[Dxx, Dyy, Dzz])
 
 
-def run(testnumber, lam, Tf, N, tol, order):
+def _rel_drift(q):
+    """Final-time drift of a conserved quantity q(t) from its initial value.
+
+    Returns the *relative* drift |q[-1]-q[0]|/|q[0]| when q[0] is nonzero, else
+    the absolute drift |q[-1]-q[0]| (some quantities, e.g. mass of an odd initial
+    profile, integrate to zero).
+    """
+    q0 = q[0]
+    return abs(q[-1] - q0) / abs(q0) if abs(q0) > 1e-14 else abs(q[-1] - q0)
+
+
+def run(testnumber, lam, Tf, N, tol, order, use_lomac=False):
     """Run the solver for one lambda value.
 
-    Returns (L1err, rankvals, tvals, p, U, G):
+    Returns (L1err, rankvals, tvals, p, U, G, macro):
         L1err    : float       L^1 error vs the exact solution (NaN if none)
         rankvals : (Nt, 3)     multilinear rank [r1, r2, r3] at each time
         tvals    : (Nt,)       time levels
         p        : TestParameters
         U, G     : final Tucker solution (factor matrices and core)
+        macro    : dict of (Nt,) arrays  mass, Jx, Jy, Jz, energy over time
     """
     p = TestParameters(testnumber, Tf, N, N, N)
     diff = build_diff_matrices(p)
@@ -100,14 +113,27 @@ def run(testnumber, lam, Tf, N, tol, order):
     G = p.G.copy()
     MLR = list(G.shape)
 
+    # LoMaC data: weight function, constants, and the conserved reference moments
+    # (those of the initial condition).  Always built so we can *track* the
+    # macroscopic quantities; only *passed* to the step when LoMaC is requested.
+    lomac_data = build_lomac_data(p, U, G)
+    truncation = lomac_data if use_lomac else None
+
     rankvals = np.zeros((Nt, 3), dtype=int)
     rankvals[0, :] = MLR
+
+    # Physical quantities over time (mass, momentum x/y/z, energy).
+    mass = np.zeros(Nt); Jx = np.zeros(Nt); Jy = np.zeros(Nt)
+    Jz = np.zeros(Nt); energy = np.zeros(Nt)
+    mass[0], Jx[0], Jy[0], Jz[0], energy[0] = macroscopic_quantities(U, G, lomac_data)
 
     for n in range(1, Nt):
         tn = tvals[n - 1]
         dtn = tvals[n] - tvals[n - 1]
-        U, G, MLR = imex_step(order, U, G, MLR, p.A, p.B, p.C, p.P, tn, dtn, diff, tol)
+        U, G, MLR = imex_step(order, U, G, MLR, p.A, p.B, p.C, p.P, tn, dtn,
+                              diff, tol, truncation)
         rankvals[n, :] = MLR
+        mass[n], Jx[n], Jy[n], Jz[n], energy[n] = macroscopic_quantities(U, G, lomac_data)
 
     # L1 error vs the exact solution (scaled by the cell measure).
     L1err = np.nan
@@ -115,7 +141,8 @@ def run(testnumber, lam, Tf, N, tol, order):
         u_approx = tucker_full(U, G)
         L1err = p.dx * p.dy * p.dz * np.sum(np.abs(u_approx - p.u_exact))
 
-    return L1err, rankvals, tvals, p, U, G
+    macro = dict(mass=mass, Jx=Jx, Jy=Jy, Jz=Jz, energy=energy)
+    return L1err, rankvals, tvals, p, U, G, macro
 
 
 def main():
@@ -132,7 +159,11 @@ def main():
     parser.add_argument("--Tf", type=float, default=10, help="final time. Default: 10.")
     parser.add_argument("--N", type=int, default=100, help="cells per dimension. Default: 100.")
     parser.add_argument("--tol", type=float, default=1e-4, help="truncation tolerance. Default: 1e-4.")
+    parser.add_argument("--truncation", choices=["plain", "lomac"], default="plain",
+                        help="plain=HOSVD (nonconstrun); lomac=conservative LoMaC "
+                             "(conserves mass/momentum/energy). Default: plain.")
     args = parser.parse_args()
+    use_lomac = args.truncation == "lomac"
 
     if args.sweep == 0:
         Lambdavals = np.array([0.9])
@@ -140,15 +171,19 @@ def main():
         Lambdavals = np.arange(0.5, 2.01, 0.1)
 
     L1errvals = np.zeros(len(Lambdavals))
-    rankvals = tvals = None
+    rankvals = tvals = macro = None
     t_start = time.perf_counter()                       # MATLAB's tic
     for k, lam in enumerate(Lambdavals):
         print(f"Starting lambda = {lam:.2f}")
-        L1errvals[k], rankvals, tvals, p, U, G = run(
-            args.test, lam, args.Tf, args.N, args.tol, args.order
+        L1errvals[k], rankvals, tvals, p, U, G, macro = run(
+            args.test, lam, args.Tf, args.N, args.tol, args.order, use_lomac
         )
+        # Conservation drift of mass and energy over the run (relative if nonzero).
+        mass_drift = _rel_drift(macro["mass"])
+        energy_drift = _rel_drift(macro["energy"])
         print(f"  lambda={lam:.2f}, L1 error={L1errvals[k]:.3e}, "
-              f"final ranks={[int(r) for r in rankvals[-1]]}")
+              f"final ranks={[int(r) for r in rankvals[-1]]}, "
+              f"mass drift={mass_drift:.2e}, energy drift={energy_drift:.2e}")
     elapsed = time.perf_counter() - t_start             # MATLAB's toc
     print(f"Elapsed time is {elapsed:.6f} seconds.")
 
@@ -174,7 +209,30 @@ def main():
         ax2.legend()
         fig2.savefig("figs/l1_error.png", dpi=150, bbox_inches="tight")
 
-    print("Saved plots: rank_vs_time.png" + (", l1_error.png" if args.sweep == 1 else ""))
+    # Conservation of physical quantities over time (last lambda run), mirroring
+    # the mass / momentum / energy figures of the MATLAB main.m.  Mass and energy
+    # are shown as relative drift when their initial value is nonzero, else as
+    # absolute drift (an odd initial profile integrates to zero).
+    def drift_curve(ax, series, name):
+        q0 = series[0]
+        if abs(q0) > 1e-14:
+            ax.semilogy(tvals, np.abs(series - q0) / abs(q0), "k-")
+            ax.set_ylabel(f"relative {name}\n|q - q0|/|q0|")
+        else:
+            ax.semilogy(tvals, np.abs(series - q0), "k-")
+            ax.set_ylabel(f"absolute {name}\n|q - q0|  (q0=0)")
+
+    fig3, axes = plt.subplots(3, 1, figsize=(6, 9), sharex=True)
+    drift_curve(axes[0], macro["mass"], "mass")
+    for comp, col in zip(["Jx", "Jy", "Jz"], ["k", "g", "m"]):
+        axes[1].semilogy(tvals, np.abs(macro[comp] - macro[comp][0]), col + "-", label=comp)
+    axes[1].set_ylabel("momentum |J - J0|"); axes[1].legend()
+    drift_curve(axes[2], macro["energy"], "energy"); axes[2].set_xlabel("t")
+    fig3.suptitle(f"Test {args.test}, order {args.order}, truncation={args.truncation}")
+    fig3.savefig("figs/conservation.png", dpi=150, bbox_inches="tight")
+
+    print("Saved plots: rank_vs_time.png, conservation.png"
+          + (", l1_error.png" if args.sweep == 1 else ""))
 
 
 if __name__ == "__main__":

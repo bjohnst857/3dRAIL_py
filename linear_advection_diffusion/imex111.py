@@ -34,8 +34,9 @@ from numpy.linalg import LinAlgError
 from scipy.linalg import schur
 from scipy.linalg.lapack import get_lapack_funcs
 
-from helpers import flux_product, red_aug_S, nonconstrun, tucker_full
+from helpers import flux_product, red_aug_S, tucker_full
 from simoncini import simoncini
+from lomac import truncate
 
 
 @dataclass
@@ -228,7 +229,7 @@ def _s_step(solution, fluxes, source, V_new, R, dtn, diff):
     return S_nn
 
 
-def imex111(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol):
+def imex111(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol, lomac_data=None):
     """Advance the Tucker solution one first-order IMEX step.
 
     Parameters
@@ -242,6 +243,8 @@ def imex111(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol):
     dtn   : float             time step
     diff  : DiffMatrices      differentiation matrices
     tol   : float             truncation tolerance
+    lomac_data : LomacData or None
+                  if given, use conservative LoMaC truncation; else plain HOSVD
 
     Returns
     -------
@@ -276,6 +279,6 @@ def imex111(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol):
     # --- S-step: update the core --------------------------------------------
     S_nn = _s_step(solution, fluxes, source, V_new, R, dtn, diff)
 
-    # --- Truncation ---------------------------------------------------------
-    U_nn, G_nn, MLR_nn = nonconstrun(V_new, S_nn, tol)
+    # --- Truncation (plain HOSVD, or conservative LoMaC) --------------------
+    U_nn, G_nn, MLR_nn = truncate(V_new, S_nn, tol, lomac_data)
     return U_nn, G_nn, MLR_nn
