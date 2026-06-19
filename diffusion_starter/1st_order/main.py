@@ -27,6 +27,7 @@ Examples
 """
 import sys
 import argparse
+import time
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -67,10 +68,10 @@ ic_rank = args.rank
 if args.sweep == 0:
     Lambdavals = np.array([0.5])            # single lambda value
 else:
-    Lambdavals = np.arange(0.1, 1.1, 0.1)   # sweep over lambda
+    Lambdavals = np.arange(0.5, 3.02, 0.02)   # sweep over lambda
 
 L1errvals  = np.zeros((len(Lambdavals), 1))
-
+t_start = time.perf_counter()  
 for k in range(len(Lambdavals)):
     lam = Lambdavals[k]
     print(f"Starting lambda = {lam}")
@@ -90,7 +91,7 @@ for k in range(len(Lambdavals)):
     zvals = zvals[:Nz] + dz / 2
 
     dt   = lam / (1/dx + 1/dy + 1/dz)
-    Tf   = 2
+    Tf   = 0.5
     tvals = np.arange(0, Tf, dt)
     if tvals[-1] != Tf:
         tvals = np.append(tvals, Tf)
@@ -177,6 +178,7 @@ for k in range(len(Lambdavals)):
     # -------------------------------------------------------------------------
     # Time loop
     # -------------------------------------------------------------------------
+    
     for n in range(1, Nt):
         dtn = tvals[n] - tvals[n-1]
 
@@ -275,12 +277,16 @@ for k in range(len(Lambdavals)):
         MLR = [r1_nn, r2_nn, r3_nn]
         rankvals[n, :] = MLR
 
+    
     # L1 error scaled by domain measure
     u_approx = tl.tmprod(G, U, list(range(G.ndim)))
     L1errvals[k, 0] = (1/L**3) * dx*dy*dz * np.sum(np.abs(u_approx - u_exact))
     print(f"Lambda={lam:.2f}, L1 error={L1errvals[k, 0]:.2e}, Final ranks={MLR}")
 
 # -------------------------------------------------------------------------
+elapsed = time.perf_counter() - t_start             # MATLAB's toc
+print(f"Elapsed time is {elapsed:.6f} seconds.")
+
 # Plots
 # -------------------------------------------------------------------------
 
