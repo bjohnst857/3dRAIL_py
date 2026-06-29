@@ -4,10 +4,17 @@ This ports the conservation machinery of the MATLAB 3dRAIL code:
 
     MATLAB file / section          ->  here
     ----------------------------------------------------------
-    lomac_012.m                    ->  lomac_012
+    lomac_0.m / lomac_01.m / lomac_012.m  ->  lomac  (one level-parameterized fn)
     main.m  "Macroscopic quantities" ->  macroscopic_quantities
     main.m  "Weight function ..."   ->  build_lomac_data
     (moment evaluations in main.m)  ->  integral_moment
+
+The three MATLAB LoMaC files are the same algorithm with a different number of
+conserved moments, selected here by ``level``:
+
+    level 0  (lomac_0.m)    conserve mass                      basis w*[1]
+    level 1  (lomac_01.m)   conserve mass, momentum            basis w*[1, s]
+    level 2  (lomac_012.m)  conserve mass, momentum, energy    basis w*[1, s, s^2]
 
 Background
 ----------
@@ -110,6 +117,8 @@ class LomacData:
     constants ``c`` and ``cc`` from ``main.m``, and the conserved reference
     moments (those of the initial condition).
     """
+    # number of conserved moments: 0=mass, 1=+momentum, 2=+energy
+    level: int
     # grid
     xvals: np.ndarray
     yvals: np.ndarray
@@ -137,12 +146,16 @@ class LomacData:
     kM: float
 
 
-def build_lomac_data(p, U0, G0):
+def build_lomac_data(p, U0, G0, level=2):
     """Assemble :class:`LomacData` from a :class:`TestParameters` and the IC.
 
     Ports the "Weight function for LoMaC" block of ``main.m`` (the weight ``w``,
     the constants ``c`` and ``cc``) and seeds the conserved reference moments
     ``rhoM, JxM, JyM, JzM, kM`` from the initial condition ``(U0, G0)``.
+
+    ``level`` (0, 1, or 2) selects how many moments LoMaC will conserve; the
+    full 3-column weight basis and all constants are always built (cheap), so
+    the same bundle can also be used purely to *track* the quantities.
     """
     x, y, z = p.xvals, p.yvals, p.zvals
     Nx, Ny, Nz = p.Nx, p.Ny, p.Nz
@@ -179,6 +192,7 @@ def build_lomac_data(p, U0, G0):
     rhoM, JxM, JyM, JzM, kM = _moments_with(U0, G0, ones_data)
 
     return LomacData(
+        level=level,
         xvals=x, yvals=y, zvals=z, ones_x=ox, ones_y=oy, ones_z=oz, dV=dV,
         Vx_f1=Vx_f1, Vy_f1=Vy_f1, Vz_f1=Vz_f1,
         D_rho=dV * Sw1 * Sw2 * Sw3,
@@ -205,31 +219,37 @@ def _moments_with(factors, core, d):
 
 
 def _macro_core(rho, Jx, Jy, Jz, k, data):
-    """Build the 3x3x3 macroscopic core S that places given moments in the basis.
+    """Build the macroscopic core S that places given moments in the weight basis.
 
-    Shared by ``S_f1``, ``S_f2P`` and ``S_fM`` in ``lomac_012.m``: a fixed
-    pattern that encodes mass, momentum and energy into the weight basis
-    ``w(s)*[1, s, s^2]``.
+    Shared by ``S_f1``, ``S_f2P`` and ``S_fM`` in the MATLAB LoMaC files.  Its
+    size and contents depend on ``data.level``: a (L+1)^3 core encoding mass
+    (level 0), plus momentum (level 1), plus energy (level 2) in the basis
+    ``w(s) * [1, s, s^2][:L+1]``.
     """
-    S = np.zeros((3, 3, 3))
-    S[0, 0, 0] = rho / data.D_rho
-    S[1, 0, 0] = Jx / data.D_Jx
-    S[0, 1, 0] = Jy / data.D_Jy
-    S[0, 0, 1] = Jz / data.D_Jz
-    energy_coeff = (2 * k - data.c * rho) / data.cc
-    S[0, 0, 0] -= energy_coeff * data.c
-    S[2, 0, 0] = energy_coeff
-    S[0, 2, 0] = energy_coeff
-    S[0, 0, 2] = energy_coeff
+    L = data.level
+    n = L + 1
+    S = np.zeros((n, n, n))
+    S[0, 0, 0] = rho / data.D_rho                 # mass (always)
+    if L >= 1:                                     # momentum
+        S[1, 0, 0] = Jx / data.D_Jx
+        S[0, 1, 0] = Jy / data.D_Jy
+        S[0, 0, 1] = Jz / data.D_Jz
+    if L >= 2:                                     # energy
+        energy_coeff = (2 * k - data.c * rho) / data.cc
+        S[0, 0, 0] -= energy_coeff * data.c
+        S[2, 0, 0] = energy_coeff
+        S[0, 2, 0] = energy_coeff
+        S[0, 0, 2] = energy_coeff
     return S
 
 
-def lomac_012(factors, core, tol, data):
-    """LoMaC truncation conserving moments 0, 1, 2 (mass, momentum, energy).
+def lomac(factors, core, tol, data):
+    """LoMaC truncation conserving the first ``data.level``+1 moments.
 
-    Port of ``lomac_012.m``.  Truncates the Tucker tensor ``(factors, core)`` to
-    relative tolerance ``tol`` while forcing its mass/momentum/energy to equal
-    the conserved reference moments stored in ``data``.
+    Port of ``lomac_0.m`` / ``lomac_01.m`` / ``lomac_012.m`` (selected by
+    ``data.level`` = 0, 1, or 2).  Truncates the Tucker tensor ``(factors, core)``
+    to relative tolerance ``tol`` while forcing its mass (and, for higher levels,
+    momentum and energy) to equal the conserved reference moments in ``data``.
 
     Returns
     -------
@@ -237,7 +257,8 @@ def lomac_012(factors, core, tol, data):
     new_core    : ndarray
     rank        : list[int]   the new multilinear rank
     """
-    f1_basis = [data.Vx_f1, data.Vy_f1, data.Vz_f1]
+    L = data.level
+    f1_basis = [data.Vx_f1[:, :L + 1], data.Vy_f1[:, :L + 1], data.Vz_f1[:, :L + 1]]
 
     # Macroscopic part f1 of the current solution (carries its moments).
     rhoH, JxH, JyH, JzH, kH = macroscopic_quantities(factors, core, data)
@@ -278,11 +299,11 @@ def lomac_012(factors, core, tol, data):
 def truncate(factors, core, tol, lomac_data=None):
     """Truncation dispatcher used by every IMEX step.
 
-    With ``lomac_data=None`` this is the plain HOSVD truncation
+    With ``lomac_data=None`` this is the plain, non-conservative HOSVD truncation
     (:func:`helpers.nonconstrun`); with a :class:`LomacData` bundle it is the
-    conservative :func:`lomac_012`.  This mirrors choosing the truncation line in
-    the MATLAB ``IMEX*.m`` files.
+    conservative :func:`lomac` at the bundle's ``level``.  This mirrors choosing
+    the truncation line in the MATLAB ``IMEX*.m`` files.
     """
     if lomac_data is None:
         return nonconstrun(factors, core, tol)
-    return lomac_012(factors, core, tol, lomac_data)
+    return lomac(factors, core, tol, lomac_data)

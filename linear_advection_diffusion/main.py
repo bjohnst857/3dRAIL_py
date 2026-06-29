@@ -86,8 +86,14 @@ def _rel_drift(q):
     return abs(q[-1] - q0) / abs(q0) if abs(q0) > 1e-14 else abs(q[-1] - q0)
 
 
-def run(testnumber, lam, Tf, N, tol, order, use_lomac=False):
+def run(testnumber, lam, Tf, N, tol, order, lomac_level=None):
     """Run the solver for one lambda value.
+
+    Parameters
+    ----------
+    lomac_level : int or None
+        None -> non-conservative HOSVD truncation; 0/1/2 -> conservative LoMaC
+        preserving mass / mass+momentum / mass+momentum+energy.
 
     Returns (L1err, rankvals, tvals, p, U, G, macro):
         L1err    : float       L^1 error vs the exact solution (NaN if none)
@@ -116,8 +122,8 @@ def run(testnumber, lam, Tf, N, tol, order, use_lomac=False):
     # LoMaC data: weight function, constants, and the conserved reference moments
     # (those of the initial condition).  Always built so we can *track* the
     # macroscopic quantities; only *passed* to the step when LoMaC is requested.
-    lomac_data = build_lomac_data(p, U, G)
-    truncation = lomac_data if use_lomac else None
+    lomac_data = build_lomac_data(p, U, G, level=lomac_level if lomac_level is not None else 2)
+    truncation = lomac_data if lomac_level is not None else None
 
     rankvals = np.zeros((Nt, 3), dtype=int)
     rankvals[0, :] = MLR
@@ -159,11 +165,15 @@ def main():
     parser.add_argument("--Tf", type=float, default=10, help="final time. Default: 10.")
     parser.add_argument("--N", type=int, default=100, help="cells per dimension. Default: 100.")
     parser.add_argument("--tol", type=float, default=1e-4, help="truncation tolerance. Default: 1e-4.")
-    parser.add_argument("--truncation", choices=["plain", "lomac"], default="plain",
-                        help="plain=HOSVD (nonconstrun); lomac=conservative LoMaC "
-                             "(conserves mass/momentum/energy). Default: plain.")
+    parser.add_argument("--truncation",
+                        choices=["none", "lomac0", "lomac01", "lomac012"], default="none",
+                        help="truncation method: none=non-conservative HOSVD "
+                             "(nonconstrun); lomac0=conserve mass; "
+                             "lomac01=conserve mass+momentum; "
+                             "lomac012=conserve mass+momentum+energy. Default: none.")
     args = parser.parse_args()
-    use_lomac = args.truncation == "lomac"
+    # Map the choice to a LoMaC level (None = non-conservative HOSVD).
+    lomac_level = {"none": None, "lomac0": 0, "lomac01": 1, "lomac012": 2}[args.truncation]
 
     if args.sweep == 0:
         Lambdavals = np.array([0.9])
@@ -176,7 +186,7 @@ def main():
     for k, lam in enumerate(Lambdavals):
         print(f"Starting lambda = {lam:.2f}")
         L1errvals[k], rankvals, tvals, p, U, G, macro = run(
-            args.test, lam, args.Tf, args.N, args.tol, args.order, use_lomac
+            args.test, lam, args.Tf, args.N, args.tol, args.order, lomac_level
         )
         # Conservation drift of mass and energy over the run (relative if nonzero).
         mass_drift = _rel_drift(macro["mass"])

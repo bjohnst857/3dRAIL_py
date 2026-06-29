@@ -372,44 +372,6 @@ def dirk2(U_n, G_n, MLR_n, diff, dtn, tol):
                        prev_stages=[(1 - gamma, U_1, G_1)])
 
 
-def dirk3(U_n, G_n, MLR_n, diff, dtn, tol):
-    """Advance the Tucker solution one third-order DIRK step.
-
-    Four-stage, stiffly-accurate L-stable DIRK with diagonal coefficient 1/2
-    (the ARS(4,4,3) implicit tableau), the implicit half of MATLAB IMEX443.m.
-    Stage 1 is backward Euler with step dtn/2; stages 2-4 are generic implicit
-    DIRK stages whose RHS accumulate  dt * sum_j a_ij * L(u^(j)).
-
-    Implicit Butcher tableau (diffusion operator L):
-        c = [1/2, 2/3, 1/2, 1]
-        a_2 = [1/6];                 a_3 = [-1/2, 1/2];
-        a_4 = [3/2, -3/2, 1/2];      b   = a_4 (stiffly accurate -> u^{n+1}=u^(4))
-
-    Parameters / Returns : same signature and meaning as ``backward_euler``.
-    """
-    a = 0.5  # DIRK diagonal coefficient (same for every stage)
-
-    # Stage 1 : backward Euler with step dtn/2  (c_1 = 1/2)
-    U_1, G_1, _ = backward_euler(U_n, G_n, MLR_n, diff, 0.5 * dtn, tol)
-
-    # Stage 2 : c_2 = 2/3
-    U_2, G_2, _ = _dirk_stage(U_n, G_n, MLR_n, diff, dtn, tol,
-                              a_diag=a, c_i=2/3,
-                              aug_U=[U_1],
-                              prev_stages=[(1/6, U_1, G_1)])
-
-    # Stage 3 : c_3 = 1/2
-    U_3, G_3, _ = _dirk_stage(U_n, G_n, MLR_n, diff, dtn, tol,
-                              a_diag=a, c_i=1/2,
-                              aug_U=[U_1, U_2],
-                              prev_stages=[(-1/2, U_1, G_1), (1/2, U_2, G_2)])
-
-    # Stage 4 (= t^{n+1}) : c_4 = 1
-    return _dirk_stage(U_n, G_n, MLR_n, diff, dtn, tol,
-                       a_diag=a, c_i=1.0,
-                       aug_U=[U_1, U_2, U_3],
-                       prev_stages=[(3/2, U_1, G_1), (-3/2, U_2, G_2),
-                                    (1/2, U_3, G_3)])
 
 
 # -------------------------------------------------------------------------
