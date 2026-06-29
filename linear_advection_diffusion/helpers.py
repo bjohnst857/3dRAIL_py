@@ -198,11 +198,22 @@ def red_aug_S(Vx_ddagger, Vx_old, Vy_ddagger, Vy_old, Vz_ddagger, Vz_old):
 
 
 def nonconstrun(factors, core, tol):
-    """Truncate a Tucker tensor with a HOSVD (mlsvd) at tolerance ``tol``.
+    """Truncate a Tucker tensor with a sequentially-truncated HOSVD at ``tol``.
 
     This is the plain (non-conservative) truncation step.  We compute an
-    mlsvd of the core, fold its factor matrices into the existing bases, and
+    ST-MLSVD of the core, fold its factor matrices into the existing bases, and
     return the smaller Tucker tensor plus its new multilinear rank.
+
+    We do *not* use ``pytensorlab.mlsvd(core, tol=...)`` here: that routine's
+    tolerance handling is buggy (``TruncationMLSVTolerance`` never advances its
+    per-mode counter ``self._n``, so every mode is truncated at ``tol/ndim``
+    instead of the intended ``tol/ndim, tol/(ndim-1), ..., tol/1``).  The later
+    modes are under-truncated, which makes the multilinear rank creep upward
+    every step and eventually blows up problems with a near-threshold
+    singular-value cluster (e.g. test 3's rigid-body rotation).  See
+    ``PYTENSORLAB_MLSVD_BUG.md``.  Instead we reproduce Tensorlab 3.0's exact
+    ``mlsvd.m`` truncation rule (per-mode threshold ``tol/(N-n)`` for
+    ``n = 0..N-1`` with accumulated relative error), matching the MATLAB code.
 
     Parameters
     ----------
@@ -216,9 +227,36 @@ def nonconstrun(factors, core, tol):
     new_core    : ndarray
     rank        : list[int]   the new multilinear rank [r1, r2, r3]
     """
-    tucker, _ = tl.mlsvd(core, tol=tol)
-    SU = list(tucker.factors)
-    SG = tucker.core
-    new_factors = [factors[m] @ SU[m] for m in range(3)]
-    rank = list(SG.shape)
-    return new_factors, SG, rank
+    S = np.asarray(core, dtype=float)
+    N = S.ndim
+
+    normsq = None       # squared Frobenius norm, taken from the first mode (Tensorlab T2)
+    relerr = 0.0        # relative error accumulated from already-truncated modes
+    mode_factors = []
+    for n in range(N):
+        # Mode-n unfolding (any column order gives the same left singular vectors
+        # and singular values, so plain C-order reshape is fine here).
+        Sn = np.moveaxis(S, n, 0).reshape(S.shape[n], -1)
+        U, sv, _ = np.linalg.svd(Sn, full_matrices=False)
+        if normsq is None:
+            normsq = float(np.dot(sv, sv))
+
+        # Largest number of trailing (smallest) singular values we may discard
+        # while keeping the accumulated relative error below the per-mode budget.
+        tail = np.cumsum(sv[::-1] ** 2)               # tail[i] = energy of i+1 smallest
+        within = np.where(relerr + np.sqrt(tail / normsq) < tol / (N - n))[0]
+        if within.size:
+            ndrop = int(within.max()) + 1
+            relerr += float(np.sqrt(tail[ndrop - 1] / normsq))
+            keep = max(sv.size - ndrop, 1)
+        else:
+            keep = sv.size
+
+        Uk = U[:, :keep]
+        mode_factors.append(Uk)
+        # Sequential truncation: project this mode out of the working core.
+        rest = tuple(S.shape[j] for j in range(N) if j != n)
+        S = np.moveaxis((Uk.T @ Sn).reshape((keep,) + rest), 0, n)
+
+    new_factors = [factors[m] @ mode_factors[m] for m in range(N)]
+    return new_factors, S, list(S.shape)
