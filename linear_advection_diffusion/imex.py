@@ -1,4 +1,4 @@
-"""Higher-order IMEX time steps for the 3D RAIL advection-diffusion solver.
+"""IMEX time steps for the 3D RAIL advection-diffusion solver, orders 1-3.
 
 PDE (periodic BCs):
 
@@ -10,12 +10,16 @@ is evaluated at the implicit stage nodes.  Everything stays in Tucker format.
 
 This file ports the MATLAB files
 
+    IMEX111.m   ->  imex111   first-order  (single diagonal-implicit stage)
     IMEX222.m   ->  imex222   second-order (ARS(2,2,2), gamma = 1-1/sqrt(2))
     IMEX443.m   ->  imex443   third-order  (ARS(4,4,3), diagonal 1/2)
 
 and adds a small :func:`imex_step` dispatcher so ``main.py`` can pick the order.
-The first-order step itself lives in ``imex111.py`` (port of IMEX111.m); the
-higher-order schemes call it as a subroutine, exactly as the MATLAB does.
+All three orders share one Sylvester/Simoncini implementation (:func:`k_step`,
+:func:`s_step`): IMEX111 is just that machinery run once with diagonal
+coefficient 1 and star basis = the current basis, so it needs no separate code
+path.  The higher-order schemes call ``imex111`` as a subroutine for their
+predictors, exactly as the MATLAB does.
 
 Structure of one higher-order step (mirrors the MATLAB line-for-line)
 ---------------------------------------------------------------------
@@ -42,24 +46,107 @@ equivalents of the repeated MATLAB expressions:
 Each PDE term (transport, diffusion of a stage, source, advection flux)
 becomes one call to these helpers, weighted by the DIRK/RK coefficient, summed
 into the right-hand side.  This is verbose on purpose: every line corresponds
-to a line in IMEX222.m / IMEX443.m so the two codebases can be read side by
-side.
+to a line in IMEX111.m / IMEX222.m / IMEX443.m so the two codebases can be read
+side by side.
 
-Index-ordering note (see imex111.py for the full discussion): right-hand-side
+Index-ordering note (the #1 source of bugs in this port): right-hand-side
 pieces are built with tmprod + tens2mat (NumPy C-order, internally consistent),
-and the Sylvester ``B`` matrix pairs the two non-m modes in ascending order
+never a hand-written Kronecker product, because ``tens2mat(T, row=m)`` unfolds
+in NumPy's C-order, the opposite of MATLAB's column-major ``tens2mat``.  The
+only place we *do* write a kron is the Sylvester ``B`` matrix, and there we use
+the verified rule: for mode ``m`` the other two modes pair in ascending order
 (smaller index outer, larger inner).
 """
+from dataclasses import dataclass, field
 from math import sqrt
 
 import numpy as np
 import pytensorlab as tl
+from numpy.linalg import LinAlgError
+from scipy.linalg import schur
+from scipy.linalg.lapack import get_lapack_funcs
 
 from helpers import flux_product, red_aug_K, red_aug_S, tucker_full
 from simoncini import simoncini
 from lomac import truncate
-# reuse the validated 1st-order step and its cached Sylvester machinery
-from imex111 import imex111, DiffMatrices, solve_sylvester_cached
+
+
+@dataclass
+class DiffMatrices:
+    """Bundle of spatial differentiation matrices for one run.
+
+    first[m]   : (N_m, N_m)  first-derivative matrix (advection), skew-symmetric
+    second[m]  : (N_m, N_m)  second-derivative matrix already scaled by the
+                             diffusion coefficient d_m (diffusion), symmetric
+    """
+    first: list   # [Dx, Dy, Dz]
+    second: list  # [Dxx, Dyy, Dzz]  (already multiplied by d1, d2, d3)
+    # Memoized real Schur factorizations of the K-step "A" matrix; see
+    # schur_of_A.  Keyed by (mode, theta); not part of equality/repr.
+    _schur_cache: dict = field(default_factory=dict, repr=False, compare=False)
+
+    def schur_of_A(self, m, theta):
+        """Real Schur factorization (T, Z) of A = I - theta * second[m].
+
+        Every K-step solves a Sylvester equation A K + K B = Q whose left-hand
+        matrix is ``A = I - theta * second[m]``, with ``theta = (stage coeff)*dt``.
+        Within a run this ``A`` is the *same* for almost every time step (``dt``
+        and ``second[m]`` are fixed), so the Bartels-Stewart algorithm keeps
+        recomputing the *identical* Schur decomposition of a large (N_m x N_m)
+        matrix.  We compute it once per distinct ``(m, theta)`` and reuse it,
+        which removes the dominant cost of the solver.
+
+        The cache key rounds ``theta`` to 12 significant figures.  The step size
+        ``dt`` is meant to be constant, but ``main.py`` forms each ``dtn`` as a
+        difference of ``numpy.arange`` values, so consecutive steps differ in the
+        last bit or two (~1e-16 relative).  Rounding collapses that floating-point
+        noise to a single cache entry (the corresponding change in ``A`` is far
+        below machine precision), while genuinely different ``theta`` values --
+        distinct stage coefficients, or the final shortened step -- stay separate.
+
+        Returns
+        -------
+        (T, Z) : tuple of ndarray
+            Real Schur form with ``A = Z @ T @ Z.T`` and ``Z`` orthogonal.
+        """
+        key = (m, float(f"{theta:.12g}"))
+        factorization = self._schur_cache.get(key)
+        if factorization is None:
+            N_m = self.second[m].shape[0]
+            A = np.eye(N_m) - theta * self.second[m]
+            factorization = schur(A, output="real")   # A = Z @ T @ Z.T
+            self._schur_cache[key] = factorization
+        return factorization
+
+
+def solve_sylvester_cached(schur_a, b, q):
+    """Solve the Sylvester equation ``A X + X B = Q`` reusing a Schur form of A.
+
+    This is exactly ``scipy.linalg.solve_sylvester`` (the Bartels-Stewart
+    algorithm), except the caller passes in the precomputed real Schur
+    factorization of ``A`` instead of having it recomputed on every call.  That
+    factorization is the expensive, reusable part (see
+    :meth:`DiffMatrices.schur_of_A`); the rest -- a small Schur of ``B`` and a
+    triangular solve -- is cheap and genuinely changes every step.
+
+    Parameters
+    ----------
+    schur_a : (T, Z)        real Schur form of A from ``scipy.linalg.schur``
+    b       : (n, n) ndarray   trailing matrix of the Sylvester equation
+    q       : (N, n) ndarray   right-hand side
+
+    Returns
+    -------
+    x : (N, n) ndarray   solution, identical to ``solve_sylvester(A, b, q)``.
+    """
+    r, u = schur_a
+    s, v = schur(b.conj().T, output="real")
+    f = u.conj().T @ q @ v
+    trsyl, = get_lapack_funcs(("trsyl",), (r, s, f))
+    y, scale, info = trsyl(r, s, f, tranb="C")
+    if info < 0:
+        raise LinAlgError(f"Illegal value encountered in the {-info} term")
+    return u @ (scale * y) @ v.conj().T
 
 
 # =========================================================================
@@ -200,8 +287,9 @@ def k_step(m, a_diag, dtn, diff, V_star, terms):
 
     The left-hand side is the implicit diffusion of the *current* stage (the
     diagonal DIRK coefficient ``a_diag``); the right-hand side is the sum of the
-    explicit ``terms``.  Same structure as ``imex111._k_step`` but with the
-    diagonal coefficient pulled out so every stage can share this routine.
+    explicit ``terms``.  The diagonal coefficient is pulled out so every stage
+    of every IMEX order -- including the single stage of IMEX111 -- can share
+    this one routine.
     """
     second = diff.second
 
@@ -233,8 +321,8 @@ def k_step(m, a_diag, dtn, diff, V_star, terms):
 def s_step(a_diag, dtn, diff, V_new, R, terms):
     """Solve the S-step (core update) with Simoncini's tensor-Sylvester solver.
 
-    Same coefficient matrices as ``imex111._s_step`` with the diagonal DIRK
-    coefficient ``a_diag`` pulled out.
+    Shared by every IMEX order (including IMEX111's single stage), with the
+    diagonal DIRK coefficient ``a_diag`` pulled out.
     """
     second = diff.second
     Vx, Vy, Vz = V_new
@@ -319,6 +407,57 @@ def flux_terms(coeff, flow_fields, sol):
         (coeff, "flux", E2, 1),   # d/dy (a2 u)
         (coeff, "flux", E3, 2),   # d/dz (a3 u)
     ]
+
+
+# =========================================================================
+# IMEX111  --  first-order, single diagonal-implicit stage
+# =========================================================================
+def imex111(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol, lomac_data=None):
+    """Advance the Tucker solution one first-order IMEX step.
+
+    Port of IMEX111.m.  A single implicit stage with diagonal coefficient 1 and
+    star basis equal to the current basis U_n -- i.e. exactly one call each to
+    :func:`k_step` / :func:`s_step`, with no reduced-augmentation against a
+    predictor or earlier stages (there are none).  ``terms`` mirrors the MATLAB
+    right-hand side: transport of u^n, the advection fluxes at t^n (explicit,
+    weight -dt), and the source at t^{n+1} (weight +dt).
+
+    Parameters
+    ----------
+    U_n   : list of ndarray   current factor matrices [Vx, Vy, Vz]
+    G_n   : ndarray           current core tensor (r1, r2, r3)
+    MLR_n : list[int]         current multilinear rank [r1, r2, r3] (unused: the
+                               star basis U_n already carries these ranks)
+    A,B,C : callable(t)       flow fields, each returns a Tucker tensor (factors, core)
+    P     : callable(t)       source term, returns a Tucker tensor (factors, core)
+    tn    : float             current time t^n
+    dtn   : float             time step
+    diff  : DiffMatrices      differentiation matrices
+    tol   : float             truncation tolerance
+    lomac_data : LomacData or None
+                  if given, use conservative LoMaC truncation; else plain HOSVD
+
+    Returns
+    -------
+    U_nn, G_nn, MLR_nn : updated factors, core, and multilinear rank
+    """
+    sol_n = (U_n, G_n)
+
+    terms = [(1.0, "identity", sol_n, None)]
+    terms += flux_terms(-dtn, (A(tn), B(tn), C(tn)), sol_n)
+    terms += [(dtn, "identity", P(tn + dtn), None)]
+
+    V_star = U_n
+    Vx_dd = k_step(0, 1.0, dtn, diff, V_star, terms)
+    Vy_dd = k_step(1, 1.0, dtn, diff, V_star, terms)
+    Vz_dd = k_step(2, 1.0, dtn, diff, V_star, terms)
+
+    Vx_nn, Vy_nn, Vz_nn, R = red_aug_S(
+        Vx_dd, U_n[0], Vy_dd, U_n[1], Vz_dd, U_n[2])
+    V_new = [Vx_nn, Vy_nn, Vz_nn]
+
+    S_nn = s_step(1.0, dtn, diff, V_new, R, terms)
+    return truncate(V_new, S_nn, tol, lomac_data)
 
 
 # =========================================================================

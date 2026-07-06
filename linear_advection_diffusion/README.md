@@ -67,8 +67,7 @@ massive saving.  The whole point of RAIL is to keep the ranks small and
 |------------------------|---------------------------------------------------|----------------------------------------|
 | `main.py`              | Driver: build grids, time loop, plots             | `main.m`                               |
 | `test_parameters.py`   | All 8 test cases (IC, flow fields, source, exact) | `test_parameters.m`                    |
-| `imex111.py`           | One 1st-order IMEX step (IMEX111)                 | `IMEX111.m`                            |
-| `imex.py`              | 2nd/3rd-order steps + an order dispatcher         | `IMEX222.m`, `IMEX443.m`               |
+| `imex.py`              | All IMEX steps (1st/2nd/3rd order) + dispatcher   | `IMEX111.m`, `IMEX222.m`, `IMEX443.m`  |
 | `helpers.py`           | Small tensor utilities                            | `TKR.m`, `tkron.m`, `red_aug_*.m`, `nonconstrun.m` |
 | `simoncini.py`         | Direct solver for the core (S-step) equation      | `simoncini_direct_solver.m`            |
 
@@ -138,35 +137,32 @@ The two spectral differentiation matrices come straight from Trefethen's
 *Spectral Methods in MATLAB* (a skew-symmetric Toeplitz matrix for the first
 derivative, a symmetric one for the second).
 
-### 5.2 `imex111.py` — one first-order step
+### 5.2 `imex.py` — one first-order step (IMEX111)
+
+IMEX111 is the general `k_step` / `s_step` machinery (see 5.3) run for a single
+implicit stage with diagonal coefficient `a_diag = 1` and star basis equal to
+the current basis `U_n` — no reduced-augmentation against a predictor or
+earlier stages is needed, because there aren't any.
 
 ```
 function imex111(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol):
     solution <- (U_n, G_n)
 
-    # explicit flux terms  E_i = a_i * u   at the current time t^n
-    fluxes <- [ flux_product(A(tn), solution),
-                flux_product(B(tn), solution),
-                flux_product(C(tn), solution) ]
-    source <- P(tn + dtn)                          # source at the new time
+    terms <- [ (1.0, 'identity', solution, -) ]              # transport u^n
+    terms += flux_terms(-dtn, flow(tn), solution)             # -dt * (a_i u) fluxes at t^n
+    terms += [ (dtn, 'identity', P(tn+dtn), -) ]              # +dt * source at t^{n+1}
 
     V_star <- U_n                                  # in IMEX111, star basis = current basis
 
     # --- K-steps: one Sylvester solve per mode ---
     for m in (x, y, z):
-        A_sys <- I - dt * Dmm                       # implicit diffusion, self mode
-        B_sys <- implicit diffusion in the other two modes
-        Q     <- (transport u^n) - dt*(fluxes) + dt*(source), projected to mode m
-        K     <- solve_sylvester(A_sys, B_sys, Q)
-        V_ddagger[m] <- qr(K)
+        V_ddagger[m] <- k_step(m, a_diag=1, dtn, diff, V_star, terms)
 
     # --- reduced augmentation: make r1=r2=r3=R ---
     (V_new, R) <- red_aug_S(V_ddagger, U_n)
 
     # --- S-step: update the core ---
-    build coefficient matrices A1,A2,A3 (implicit diffusion in the new basis)
-    build RHS tensor  B  = same terms as Q but projected on all three modes
-    S_nn <- simoncini(A1, A2, A3, I, I, I, I, B)
+    S_nn <- s_step(a_diag=1, dtn, diff, V_new, R, terms)
 
     # --- truncate back down ---
     return nonconstrun(V_new, S_nn, tol)
