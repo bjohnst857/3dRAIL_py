@@ -108,6 +108,76 @@ def macroscopic_quantities(factors, core, data):
     return rho, Jx, Jy, Jz, energy
 
 
+def equilibrium_maxwellian(xvals, yvals, zvals, dx, dy, dz, rhoM, JxM, JyM, JzM, kM):
+    """Discrete equilibrium Maxwellian matching the moments (rhoM, JxM, JyM, JzM, kM).
+
+    Quadrature-corrected moment matching: Newton solve for (n, ux, uy, uz, T) in
+
+        f_inf(x,y,z) = n/(2*pi*R*T)^1.5 * exp(-((x-ux)^2+(y-uy)^2+(z-uz)^2)/(2*R*T))
+
+    such that the discrete moments of f_inf, evaluated with the same
+    cell-center quadrature rule used elsewhere, equal the given targets.  Used
+    by test 8 (Dougherty-Fokker-Planck) to track ``||f - f_inf||_1`` decay to
+    equilibrium.  Port of ``QCM.m`` [Taitano, Chacon, Simakov, JSC 2024]; the
+    Jacobian there mixes an absolute-coordinate energy residual with a
+    mean-centered energy weight in its own row -- reproduced verbatim rather
+    than "fixed", since it is only a Newton direction and the loop iterates to
+    the residual tolerance regardless.
+
+    Returns
+    -------
+    finf : ndarray, shape (Nx, Ny, Nz)
+    """
+    x, y, z = np.meshgrid(xvals, yvals, zvals, indexing="ij")
+    dV = dx * dy * dz
+    tol2, tol3 = 1.0e-13, 1.0e-15
+    R = 1.0 / 6.0
+    Mk = np.array([np.pi ** 1.5, 0.0, 0.0, 0.0, 3.0])
+
+    def residual(Mk):
+        n_k, ux_k, uy_k, uz_k, T_k = Mk
+        r2 = (x - ux_k) ** 2 + (y - uy_k) ** 2 + (z - uz_k) ** 2
+        f = (n_k / (2 * np.pi * R * T_k) ** 1.5) * np.exp(-r2 / (2 * R * T_k))
+        return np.array([
+            rhoM - dV * np.sum(f),
+            JxM - dV * np.sum(f * x),
+            JyM - dV * np.sum(f * y),
+            JzM - dV * np.sum(f * z),
+            kM - dV * np.sum(f * (x ** 2 + y ** 2 + z ** 2) / 2),
+        ])
+
+    Rk = residual(Mk)
+    R0_norm = np.linalg.norm(Rk)
+    count = 0
+    while np.linalg.norm(Rk) > tol2 * R0_norm + tol3:
+        n_k, ux_k, uy_k, uz_k, T_k = Mk
+        r2 = (x - ux_k) ** 2 + (y - uy_k) ** 2 + (z - uz_k) ** 2
+        expo = np.exp(-r2 / (2 * R * T_k))
+        f = n_k / (2 * np.pi * R * T_k) ** 1.5 * expo
+
+        dfdn = f / n_k
+        dfdux = f * (x - ux_k) / (R * T_k)
+        dfduy = f * (y - uy_k) / (R * T_k)
+        dfduz = f * (z - uz_k) / (R * T_k)
+        dfdT = n_k / (2 * np.pi * R) ** 1.5 * expo * (
+            -3 / (2 * T_k ** 2.5) + r2 / (2 * R * T_k ** 3.5)
+        )
+
+        weights = [np.ones_like(x), x, y, z, r2 / 2]
+        derivs = [dfdn, dfdux, dfduy, dfduz, dfdT]
+        Jk = -dV * np.array([[np.sum(w * d) for d in derivs] for w in weights])
+
+        Mk = Mk - np.linalg.solve(Jk, Rk)
+        Rk = residual(Mk)
+        count += 1
+        if count > 10:
+            break
+
+    n_k, ux_k, uy_k, uz_k, T_k = Mk
+    r2 = (x - ux_k) ** 2 + (y - uy_k) ** 2 + (z - uz_k) ** 2
+    return (n_k / (2 * np.pi * R * T_k) ** 1.5) * np.exp(-r2 / (2 * R * T_k))
+
+
 @dataclass
 class LomacData:
     """Fixed data needed for LoMaC truncation and moment tracking (one run).

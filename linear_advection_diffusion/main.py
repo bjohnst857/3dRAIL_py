@@ -19,6 +19,13 @@ Command-line usage
              4,5,7,8 -> rank tests (no exact solution)
 --sweep  0 -> single lambda (CFL factor) value; 1 -> sweep lambda to check the
          order of accuracy.  Default: 0.
+
+Test 8 (Dougherty-Fokker-Planck) additionally tracks and plots the L1 decay to
+the discrete equilibrium Maxwellian, ||f - f_inf||_1 over time (figs/
+equilibrium_l1.png), where f_inf is built by quadrature-corrected moment
+matching (helpers: lomac.equilibrium_maxwellian) to the initial condition's
+mass/momentum/energy.  This is only a meaningful diagnostic when those moments
+are conserved exactly, so --truncation defaults to lomac012 for test 8.
 """
 
 import argparse
@@ -31,7 +38,7 @@ from scipy.linalg import toeplitz
 from test_parameters import TestParameters
 from imex import imex_step, DiffMatrices
 from helpers import tucker_full
-from lomac import build_lomac_data, macroscopic_quantities
+from lomac import build_lomac_data, macroscopic_quantities, equilibrium_maxwellian
 
 
 def first_derivative_matrix(N, ds, L):
@@ -101,7 +108,8 @@ def run(testnumber, lam, Tf, N, tol, order, lomac_level=None):
         tvals    : (Nt,)       time levels
         p        : TestParameters
         U, G     : final Tucker solution (factor matrices and core)
-        macro    : dict of (Nt,) arrays  mass, Jx, Jy, Jz, energy over time
+        macro    : dict of (Nt,) arrays  mass, Jx, Jy, Jz, energy over time;
+                   also "equil" (Nt,) = ||f - f_inf||_1 for test 8, else None
     """
     p = TestParameters(testnumber, Tf, N, N, N)
     diff = build_diff_matrices(p)
@@ -133,6 +141,17 @@ def run(testnumber, lam, Tf, N, tol, order, lomac_level=None):
     Jz = np.zeros(Nt); energy = np.zeros(Nt)
     mass[0], Jx[0], Jy[0], Jz[0], energy[0] = macroscopic_quantities(U, G, lomac_data)
 
+    # Test 8 (Dougherty-Fokker-Planck): track L1 decay to the discrete
+    # equilibrium Maxwellian preserving the IC's mass/momentum/energy.
+    equilvals = None
+    finf = None
+    if testnumber == 8:
+        finf = equilibrium_maxwellian(p.xvals, p.yvals, p.zvals, p.dx, p.dy, p.dz,
+                                       lomac_data.rhoM, lomac_data.JxM,
+                                       lomac_data.JyM, lomac_data.JzM, lomac_data.kM)
+        equilvals = np.zeros(Nt)
+        equilvals[0] = p.dx * p.dy * p.dz * np.sum(np.abs(tucker_full(U, G) - finf))
+
     for n in range(1, Nt):
         tn = tvals[n - 1]
         dtn = tvals[n] - tvals[n - 1]
@@ -140,6 +159,8 @@ def run(testnumber, lam, Tf, N, tol, order, lomac_level=None):
                               diff, tol, truncation)
         rankvals[n, :] = MLR
         mass[n], Jx[n], Jy[n], Jz[n], energy[n] = macroscopic_quantities(U, G, lomac_data)
+        if testnumber == 8:
+            equilvals[n] = p.dx * p.dy * p.dz * np.sum(np.abs(tucker_full(U, G) - finf))
 
     # L1 error vs the exact solution (scaled by the cell measure).
     L1err = np.nan
@@ -147,7 +168,7 @@ def run(testnumber, lam, Tf, N, tol, order, lomac_level=None):
         u_approx = tucker_full(U, G)
         L1err = p.dx * p.dy * p.dz * np.sum(np.abs(u_approx - p.u_exact))
 
-    macro = dict(mass=mass, Jx=Jx, Jy=Jy, Jz=Jz, energy=energy)
+    macro = dict(mass=mass, Jx=Jx, Jy=Jy, Jz=Jz, energy=energy, equil=equilvals)
     return L1err, rankvals, tvals, p, U, G, macro
 
 
@@ -166,12 +187,17 @@ def main():
     parser.add_argument("--N", type=int, default=100, help="cells per dimension. Default: 100.")
     parser.add_argument("--tol", type=float, default=1e-4, help="truncation tolerance. Default: 1e-4.")
     parser.add_argument("--truncation",
-                        choices=["none", "lomac0", "lomac01", "lomac012"], default="none",
+                        choices=["none", "lomac0", "lomac01", "lomac012"], default=None,
                         help="truncation method: none=non-conservative HOSVD "
                              "(nonconstrun); lomac0=conserve mass; "
                              "lomac01=conserve mass+momentum; "
-                             "lomac012=conserve mass+momentum+energy. Default: none.")
+                             "lomac012=conserve mass+momentum+energy. "
+                             "Default: lomac012 for test 8 (the L1-decay-to-equilibrium "
+                             "plot is only meaningful when mass/momentum/energy are "
+                             "conserved), else none.")
     args = parser.parse_args()
+    if args.truncation is None:
+        args.truncation = "lomac012" if args.test == 8 else "none"
     # Map the choice to a LoMaC level (None = non-conservative HOSVD).
     lomac_level = {"none": None, "lomac0": 0, "lomac01": 1, "lomac012": 2}[args.truncation]
 
@@ -241,8 +267,22 @@ def main():
     fig3.suptitle(f"Test {args.test}, order {args.order}, truncation={args.truncation}")
     fig3.savefig("figs/conservation.png", dpi=150, bbox_inches="tight")
 
+    # Test 8 (Dougherty-Fokker-Planck): L1 decay to the equilibrium Maxwellian,
+    # mirroring figure(10) of the MATLAB main.m.
+    if args.test == 8:
+        order_style = {1: ("b", "IMEX111"), 2: ("g", "IMEX222"), 3: ("m", "IMEX443")}
+        color, label = order_style[args.order]
+        fig4, ax4 = plt.subplots()
+        ax4.semilogy(tvals, macro["equil"], color + "-", label=label)
+        ax4.set_xlabel("t"); ax4.set_ylabel(r"$||f-f^{\infty}||_1$")
+        ax4.set_title(f"Test 8 (Dougherty-Fokker-Planck), IMEX order {args.order}: "
+                      "L1 decay to equilibrium")
+        ax4.legend()
+        fig4.savefig("figs/equilibrium_l1.png", dpi=150, bbox_inches="tight")
+
     print("Saved plots: rank_vs_time.png, conservation.png"
-          + (", l1_error.png" if args.sweep == 1 else ""))
+          + (", l1_error.png" if args.sweep == 1 else "")
+          + (", equilibrium_l1.png" if args.test == 8 else ""))
 
 
 if __name__ == "__main__":
