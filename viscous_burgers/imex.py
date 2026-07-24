@@ -83,7 +83,7 @@ from numpy.linalg import LinAlgError
 from scipy.linalg import schur
 from scipy.linalg.lapack import get_lapack_funcs
 
-from helpers import tkr, tkron, red_aug_K, red_aug_S, tucker_full
+from helpers import tkr, red_aug_K, red_aug_S, tucker_full
 from simoncini import simoncini
 from lomac import truncate
 
@@ -249,7 +249,7 @@ def burgers_flux(sol):
     """
     factors, core = sol
     E_factors = [tkr(factors[m], factors[m]) for m in range(3)]
-    E_core = tkron(0.5 * core, core)
+    E_core = np.kron(0.5 * core, core)
     return E_factors, E_core
 
 
