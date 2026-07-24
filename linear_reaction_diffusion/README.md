@@ -62,7 +62,8 @@ python main.py --order 2 --test 1 --sweep 1
 ```
 
 Options: `--order {1,2,3}`, `--test {1}`, `--sweep {0,1}`, `--Tf`, `--N`,
-`--tol`. Outputs `rank_vs_time.png` (always) and `l1_error.png` (sweep only).
+`--tol`, `--truncation {none,lomac0,lomac01,lomac012}`. Outputs
+`rank_vs_time.png` (always) and `l1_error.png` (sweep only).
 
 The one test case lives in `test_parameters.py`; its docstring describes the
 PDE (including the linear reaction term), initial condition, and exact

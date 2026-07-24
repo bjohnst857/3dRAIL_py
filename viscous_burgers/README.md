@@ -40,6 +40,7 @@ knowing if you see the rank climb faster here than in
 | `imex.py`              | All IMEX steps (1st/2nd/3rd order) + dispatcher     |
 | `helpers.py`           | Small tensor utilities (`flux_product` uses `u*u`)  |
 | `simoncini.py`         | Direct solver for the core (S-step) equation        |
+| `lomac.py`             | Conservative LoMaC truncation + macroscopic quantities |
 
 ## Running it
 
@@ -54,10 +55,18 @@ python main.py --order 2 --test 2
 python main.py --order 2 --test 1 --sweep 1
 ```
 
-Options: `--order {1,2,3}`, `--test {1,2}`, `--sweep {0,1}`.
+Options: `--order {1,2,3}`, `--test {1,2}`, `--sweep {0,1}`,
+`--truncation {none,lomac0,lomac01,lomac012}` (default `none`).
 
 - `--test 1`: accuracy test, rank-(2,2,2) initial condition, manufactured
   exact solution.
 - `--test 2`: rank-growth test, no source, no exact solution.
 
 Outputs `rank_vs_time.png` (always) and `l1_error.png` (sweep only).
+
+## Notes / open questions
+
+- **LoMaC / conservation.** As in `linear_advection_diffusion/`, the
+  conservative `lomac_0`/`lomac_01`/`lomac_012` truncations are ported in
+  `lomac.py` and selectable via `--truncation`; default is the plain
+  `nonconstrun`.

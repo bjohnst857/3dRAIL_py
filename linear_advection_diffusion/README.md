@@ -37,6 +37,7 @@ Three IMEX schemes are available, of increasing order of accuracy:
 | `imex.py`              | All IMEX steps (1st/2nd/3rd order) + dispatcher   | `IMEX111.m`, `IMEX222.m`, `IMEX443.m`  |
 | `helpers.py`           | Small tensor utilities                            | `TKR.m`, `tkron.m`, `red_aug_*.m`, `nonconstrun.m` |
 | `simoncini.py`         | Direct solver for the core (S-step) equation      | `simoncini_direct_solver.m`            |
+| `lomac.py`             | Conservative LoMaC truncation + macroscopic quantities | `lomac_0.m`, `lomac_01.m`, `lomac_012.m` |
 
 ## Running it
 
@@ -52,17 +53,17 @@ python main.py --order 2 --test 1 --sweep 1
 ```
 
 Options: `--order {1,2,3}`, `--test {1..8}`, `--sweep {0,1}`, `--Tf`, `--N`,
-`--tol`. Outputs `rank_vs_time.png` (always) and `l1_error.png` (sweep only).
+`--tol`, `--truncation {none,lomac0,lomac01,lomac012}`. Outputs
+`rank_vs_time.png` (always) and `l1_error.png` (sweep only).
 
 The eight test cases live in `test_parameters.py`; their docstrings describe
 the PDE, initial condition, and (where available) exact solution for each.
 
 ## Notes / open questions
 
-- **LoMaC / conservation not ported.** The MATLAB integrators truncate with
-  the conservative `lomac_012`, which preserves mass/momentum/energy; this
-  port uses the plain `nonconstrun` and does not track the macroscopic
-  quantities. For accuracy tests (tests 1, 2, 3, 6) the results match expected
-  orders, but if you need exact mass/energy conservation (especially the
-  Dougherty-Fokker-Planck test 8), the LoMaC truncation would still need to be
-  ported. (`linear_reaction_diffusion/` does include a ported LoMaC.)
+- **LoMaC / conservation.** The conservative `lomac_0`/`lomac_01`/`lomac_012`
+  truncations (preserving mass / mass+momentum / mass+momentum+energy) are
+  ported in `lomac.py` and selectable via `--truncation`; default is the plain
+  `nonconstrun`, except test 8 (Dougherty-Fokker-Planck), which defaults to
+  `lomac012` since exact conservation is needed for the solution to relax to
+  the correct equilibrium.
