@@ -1,8 +1,7 @@
 # 3D RAIL — Viscous Burgers Solver (Python)
 
 Modifies `linear_advection_diffusion/` to replace the linear advection flux
-with the nonlinear Burgers flux `(u^2/2)`. This is an extension beyond the
-MATLAB reference, not a straight port.
+with the nonlinear Burgers flux `(u^2/2)`.
 
 > See the [top-level README](../README.md) for the shared concepts: the
 > Tucker storage format, the K-step/S-step time-stepping algorithm, and the
@@ -63,10 +62,3 @@ Options: `--order {1,2,3}`, `--test {1,2}`, `--sweep {0,1}`,
 - `--test 2`: rank-growth test, no source, no exact solution.
 
 Outputs `rank_vs_time.png` (always) and `l1_error.png` (sweep only).
-
-## Notes / open questions
-
-- **LoMaC / conservation.** As in `linear_advection_diffusion/`, the
-  conservative `lomac_0`/`lomac_01`/`lomac_012` truncations are ported in
-  `lomac.py` and selectable via `--truncation`; default is the plain
-  `nonconstrun`.
