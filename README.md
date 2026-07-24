@@ -21,10 +21,13 @@ only what's specific to it (the exact PDE, file map, and CLI usage).
 
 - Python 3.13+
 - numpy, scipy, matplotlib
-- [`pytensorlab`](https://pytensorlab.net) (`tl`) — provides `mlsvd`
-  (multilinear SVD / Tucker decomposition), `tmprod` (n-mode product), and
-  `tens2mat` (tensor unfolding). Must be installed separately; not currently on
-  PyPI as a `pip install`-able dependency of this project.
+- [`pyTensorlab`](https://pytensorlab.net) (imported as `tl`) — provides
+  `mlsvd` (multilinear SVD / Tucker decomposition), `tmprod` (n-mode product),
+  and `tens2mat` (tensor unfolding).
+
+```bash
+pip install -r requirements.txt
+```
 
 ## Repository layout
 
