@@ -1,12 +1,11 @@
 # Author: J. Nakao (MATLAB original)
 # Python conversion: B. Johnston
-# Date: 2026-06-02
 #
 # Parameters for the linear advection-diffusion-reaction test case.
 #
 # PDE: u_t + div(<A,B,C>u) - beta*u = d1*u_xx + d2*u_yy + d3*u_zz + P
 #
-# NOTE (linear reaction term): ``beta`` (docs/3DRAIL_linear_reaction_term_1.md)
+# NOTE (linear reaction term): ``beta`` (docs/3dRAIL_linear_reaction_term_1.md)
 # is hardcoded per test case as ``self.beta`` -- main.py reads it off the
 # TestParameters instance (``p.beta``) rather than taking it as a run()/CLI
 # argument, since each test's exact solution is derived for one specific beta.

@@ -5,7 +5,7 @@ Solves, with periodic boundary conditions on [-L/2, L/2]^3,
     u_t + (a1 u)_x + (a2 u)_y + (a3 u)_z = d1 u_xx + d2 u_yy + d3 u_zz + beta*u + phi.
 
 ``beta`` is a scalar linear reaction coefficient: positive beta means growth,
-negative beta means decay (see docs/3DRAIL_linear_reaction_term_1.md).  It is
+negative beta means decay (see docs/3dRAIL_linear_reaction_term_1.md).  It is
 hardcoded per test case as ``TestParameters.beta`` (not a run()/CLI argument,
 since each test's exact solution/source is derived for one specific beta) and
 folded into the diffusion matrices as F_tilde = F + (beta/3)*I
@@ -74,7 +74,7 @@ def build_diff_matrices(p):
 
     ``p.beta`` is the linear reaction coefficient (+beta*u on the RHS); it is
     folded into the diffusion matrices as F_tilde = F + (beta/3)*I, per the
-    reaction-term spec (docs/3DRAIL_linear_reaction_term_1.md, section 5.1).
+    reaction-term spec (docs/3dRAIL_linear_reaction_term_1.md, section 5.1).
     Do not fold beta into Dx/Dy/Dz -- the reaction term has no derivative and
     is unrelated to the advection flux.
     """
@@ -95,7 +95,7 @@ def _rel_drift(q, beta=0.0, t_final=0.0):
     """Final-time drift of a conserved quantity q(t) from its expected value.
 
     With a linear reaction term, mass/momentum/energy scale as exp(beta*t)
-    rather than staying constant (docs/3DRAIL_linear_reaction_term_1.md,
+    rather than staying constant (docs/3dRAIL_linear_reaction_term_1.md,
     section 5.6); beta=0 reduces this to the original constant-mass check.
     Returns the *relative* drift |q[-1]-target|/|target| when target is
     nonzero, else the absolute drift (some quantities, e.g. mass of an odd
@@ -248,7 +248,7 @@ def main():
     # are shown as relative drift when their initial value is nonzero, else as
     # absolute drift (an odd initial profile integrates to zero).  With beta != 0
     # the reference is the expected exp(beta*t) scaling, not a flat q0
-    # (docs/3DRAIL_linear_reaction_term_1.md, section 5.6); beta=0 reduces this
+    # (docs/3dRAIL_linear_reaction_term_1.md, section 5.6); beta=0 reduces this
     # to the original flat-reference check.
     def drift_curve(ax, series, name):
         q0 = series[0]

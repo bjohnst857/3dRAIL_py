@@ -118,7 +118,7 @@ class LomacData:
     moments (those of the initial condition).
 
     With a linear reaction term (+beta*u), mass/momentum/energy no longer stay
-    constant but scale as exp(beta*t) (docs/3DRAIL_linear_reaction_term_1.md,
+    constant but scale as exp(beta*t) (docs/3dRAIL_linear_reaction_term_1.md,
     section 5.6); ``beta`` is stored here so :func:`lomac` can rescale the
     fixed initial-condition reference moments by exp(beta*t) at the current
     time before enforcing them, rather than clamping back to the t=0 values.
