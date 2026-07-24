@@ -20,42 +20,6 @@ All three orders share one Sylvester/Simoncini implementation (:func:`k_step`,
 coefficient 1 and star basis = the current basis, so it needs no separate code
 path.  The higher-order schemes call ``imex111`` as a subroutine for their
 predictors, exactly as the MATLAB does.
-
-Structure of one higher-order step (mirrors the MATLAB line-for-line)
----------------------------------------------------------------------
-1. Stage 1 is just IMEX111 over a partial step (gives the first predictor).
-2. Each later stage assembles a right-hand side from the already-known stages,
-   then runs the implicit machinery: predict with IMEX111, reduced-augment the
-   basis (red_aug_K), do three K-steps (one Sylvester solve per mode),
-   reduced-augment again for the S-step (red_aug_S), solve the core
-   (Simoncini), and truncate (nonconstrun).
-
-Two building blocks do all the projection work, and they are the Python
-equivalents of the repeated MATLAB expressions:
-
-    k_rhs_piece  ->  one "term" of a K-step right-hand side.  It is the MATLAB
-                     pattern   Factor1 * tens2mat(core,m) * kron(P3, P2),
-                     i.e. keep mode m full and project the other two modes onto
-                     the star basis.  Optionally differentiate one factor first.
-
-    s_rhs_piece  ->  one "term" of the S-step right-hand side.  It is the MATLAB
-                     pattern   lmlragen({Vx'*F1, Vy'*F2, Vz'*F3}, core),
-                     i.e. project every mode onto the new basis.  Optionally
-                     differentiate one factor first.
-
-Each PDE term (transport, diffusion of a stage, source, advection flux)
-becomes one call to these helpers, weighted by the DIRK/RK coefficient, summed
-into the right-hand side.  This is verbose on purpose: every line corresponds
-to a line in IMEX111.m / IMEX222.m / IMEX443.m so the two codebases can be read
-side by side.
-
-Index-ordering note (the #1 source of bugs in this port): right-hand-side
-pieces are built with tmprod + tens2mat (NumPy C-order, internally consistent),
-never a hand-written Kronecker product, because ``tens2mat(T, row=m)`` unfolds
-in NumPy's C-order, the opposite of MATLAB's column-major ``tens2mat``.  The
-only place we *do* write a kron is the Sylvester ``B`` matrix, and there we use
-the verified rule: for mode ``m`` the other two modes pair in ascending order
-(smaller index outer, larger inner).
 """
 from dataclasses import dataclass, field
 from math import sqrt
@@ -416,11 +380,7 @@ def imex111(U_n, G_n, MLR_n, A, B, C, P, tn, dtn, diff, tol, lomac_data=None):
     """Advance the Tucker solution one first-order IMEX step.
 
     Port of IMEX111.m.  A single implicit stage with diagonal coefficient 1 and
-    star basis equal to the current basis U_n -- i.e. exactly one call each to
-    :func:`k_step` / :func:`s_step`, with no reduced-augmentation against a
-    predictor or earlier stages (there are none).  ``terms`` mirrors the MATLAB
-    right-hand side: transport of u^n, the advection fluxes at t^n (explicit,
-    weight -dt), and the source at t^{n+1} (weight +dt).
+    star basis equal to the current basis U_n.
 
     Parameters
     ----------

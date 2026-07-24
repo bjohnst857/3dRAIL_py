@@ -1,6 +1,5 @@
 # Author: J. Nakao (MATLAB original)
 # Python conversion: B. Johnston
-# Date: 2026-06-02
 #
 # Parameters for the linear advection-diffusion-reaction test case.
 #

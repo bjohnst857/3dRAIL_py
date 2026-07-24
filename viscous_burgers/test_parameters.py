@@ -1,6 +1,5 @@
 # Author: J. Nakao (MATLAB original)
 # Python conversion: B. Johnston
-# Date: 2026-06-02
 #
 # Parameters for each numerical test (viscous Burgers' equation)
 #
