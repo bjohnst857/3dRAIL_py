@@ -20,15 +20,18 @@ u_t + (u^2/2)_x + (u^2/2)_y + (u^2/2)_z  =  d1 u_xx + d2 u_yy + d3 u_zz  +  phi
 
 Diffusion is still treated implicitly; the nonlinear advection flux and
 source are explicit. The only algorithmic change from
-`linear_advection_diffusion/` is in `helpers.py::flux_product`: the flux is
-`flux_product(solution, solution)` (`u` times itself) instead of
-`flux_product(flow, solution)` (a separate flow-field tensor times `u`).
+`linear_advection_diffusion/` is the flux itself: `imex.py::burgers_flux`
+computes the self Tucker-Hadamard product `u^2/2` (`u` times itself,
+mirroring MATLAB's `E_n = {{TKR(U,U),...}, tkron(0.5*G,G)}`) instead of
+`helpers.py::flux_product`'s flow-field-times-`u` product used by the linear
+solver — Burgers has no separate flow field, so `flux_product` isn't used
+here at all.
 
-Since `flux_product` multiplies Tucker ranks mode-by-mode
-(`rank(a*b) = rank(a) * rank(b)`), squaring `u` against itself grows the rank
-faster than a typically-low-rank flow field would in the linear solver — worth
-knowing if you see the rank climb faster here than in
-`linear_advection_diffusion/` on a similar problem.
+Squaring `u` against itself multiplies its Tucker rank by itself
+(`rank(u*u) = rank(u)^2`), which grows the rank faster than a typically
+low-rank flow field would in the linear solver — worth knowing if you see the
+rank climb faster here than in `linear_advection_diffusion/` on a similar
+problem.
 
 ## File map
 
@@ -37,7 +40,7 @@ knowing if you see the rank climb faster here than in
 | `main.py`              | Driver: build grids, time loop, plots               |
 | `test_parameters.py`   | Test cases (IC, source, exact)                      |
 | `imex.py`              | All IMEX steps (1st/2nd/3rd order) + dispatcher     |
-| `helpers.py`           | Small tensor utilities (`flux_product` uses `u*u`)  |
+| `helpers.py`           | Small tensor utilities                              |
 | `simoncini.py`         | Direct solver for the core (S-step) equation        |
 | `lomac.py`             | Conservative LoMaC truncation + macroscopic quantities |
 

@@ -6,7 +6,7 @@ in the original MATLAB code:
     MATLAB file          ->  function here
     -----------------------------------------
     TKR.m                ->  tkr
-    tkron.m              ->  tkron
+    tkron.m              ->  np.kron (called directly, no wrapper)
     red_aug_S.m          ->  red_aug_S
     nonconstrun.m        ->  nonconstrun
     tensoraddition.m     ->  tensoraddition
@@ -62,42 +62,6 @@ def tkr(A, B):
     _, r2 = B.shape
     # einsum forms every pairwise product A[k,i]*B[k,j], then flatten (i,j).
     return np.einsum("ki,kj->kij", A, B).reshape(N, r1 * r2)
-
-
-def tkron(B, C):
-    """Order-3 tensor Kronecker product.
-
-    For 3D tensors this is exactly NumPy's ``np.kron`` (which generalises to
-    N dimensions), so we just call it.  Kept as a named function so the code
-    reads like the MATLAB ``tkron.m``.
-    """
-    return np.kron(B, C)
-
-
-def flux_product(flow, solution):
-    """Pointwise product of two Tucker tensors (stays in Tucker format).
-
-    The flux terms in the PDE are products like ``E1 = a1(x,y,z) * u``, where
-    both the flow field ``a1`` and the solution ``u`` are Tucker tensors.
-    The product of two Tucker tensors is again Tucker:
-
-        factor for each mode = tkr(flow_factor, solution_factor)
-        core                 = tkron(flow_core, solution_core)
-
-    Parameters
-    ----------
-    flow     : (factors, core)   Tucker tensor for the flow field a_i
-    solution : (factors, core)   Tucker tensor for u
-
-    Returns
-    -------
-    (factors, core) : Tucker tensor for the product a_i * u
-    """
-    flow_factors, flow_core = flow
-    sol_factors, sol_core = solution
-    factors = [tkr(flow_factors[m], sol_factors[m]) for m in range(3)]
-    core = tkron(flow_core, sol_core)
-    return factors, core
 
 
 def tensoraddition(factors1, core1, factors2, core2):
