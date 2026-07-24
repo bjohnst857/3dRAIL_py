@@ -14,7 +14,7 @@ folds it into the diffusion matrices as F_tilde = F + (beta/3)*I before
 building :class:`DiffMatrices`, and every equation below (K-step, S-step, and
 the previous-stage "diffusion" RHS terms used by IMEX222/443) is expressed
 purely in terms of ``diff.second``, so the shift propagates automatically
-(docs/3DRAIL_linear_reaction_term_1.md).
+(docs/3dRAIL_linear_reaction_term_1.md).
 
 This file ports the MATLAB files
 
